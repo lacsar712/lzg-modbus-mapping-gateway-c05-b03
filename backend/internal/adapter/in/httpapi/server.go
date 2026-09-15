@@ -38,6 +38,7 @@ func (s *Server) Router() *gin.Engine {
 		auth.GET("/devices", s.listDevices)
 		auth.GET("/devices/:id/points", s.listPoints)
 		auth.GET("/devices/:id/points/:name", s.getPoint)
+		auth.POST("/devices/:id/points/:name/preview", s.previewPoint)
 		auth.PUT("/devices/:id/points/:name", s.writePoint)
 		auth.GET("/devices/:id/snapshot", s.snapshot)
 		auth.GET("/mapping", s.getMapping)
@@ -155,10 +156,8 @@ func (s *Server) getPoint(c *gin.Context) {
 	c.JSON(http.StatusOK, p)
 }
 
-func (s *Server) writePoint(c *gin.Context) {
-	if !s.requireEngineer(c) {
-		return
-	}
+func (s *Server) previewPoint(c *gin.Context) {
+	// any authenticated role (observer included) may dry-run a write
 	var req struct {
 		Value float64 `json:"value"`
 	}
@@ -166,7 +165,27 @@ func (s *Server) writePoint(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body, expect {value}"})
 		return
 	}
-	if err := s.svc.WritePoint(c.Param("id"), c.Param("name"), req.Value); err != nil {
+	res, err := s.svc.PreviewWrite(c.GetString("username"), c.Param("id"), c.Param("name"), req.Value)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) writePoint(c *gin.Context) {
+	if !s.requireEngineer(c) {
+		return
+	}
+	var req struct {
+		Value        float64 `json:"value"`
+		PreviewToken string  `json:"previewToken"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body, expect {value}"})
+		return
+	}
+	if err := s.svc.WritePoint(c.GetString("username"), c.Param("id"), c.Param("name"), req.Value, req.PreviewToken); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

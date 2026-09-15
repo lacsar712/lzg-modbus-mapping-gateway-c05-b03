@@ -18,10 +18,18 @@ type GatewayService struct {
 	yamlText        string
 	lastModbusError string
 	lastErrorAt     time.Time
+
+	previews   *previewStore
+	previewTTL time.Duration
 }
 
 func NewGatewayService(store port.MappingStore, modbus port.ModbusClient) (*GatewayService, error) {
-	s := &GatewayService{store: store, modbus: modbus}
+	s := &GatewayService{
+		store:      store,
+		modbus:     modbus,
+		previews:   newPreviewStore(),
+		previewTTL: defaultPreviewTTL,
+	}
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
@@ -192,7 +200,10 @@ func (s *GatewayService) Snapshot(deviceID string) (*domain.Snapshot, error) {
 	return snap, nil
 }
 
-func (s *GatewayService) WritePoint(deviceID, name string, engValue float64) error {
+// WritePoint performs a real write. Out-of-range or bool_bit writes must
+// carry an unexpired previewToken whose digest matches this exact request
+// body (device+point+value); a successful write burns the token.
+func (s *GatewayService) WritePoint(username, deviceID, name string, engValue float64, previewToken string) error {
 	d, p, err := s.GetPoint(deviceID, name)
 	if err != nil {
 		return err
@@ -200,8 +211,15 @@ func (s *GatewayService) WritePoint(deviceID, name string, engValue float64) err
 	if !p.Writable {
 		return fmt.Errorf("point %s is read-only", name)
 	}
-	if err := domain.CheckMinMax(engValue, p.Min, p.Max); err != nil {
-		return err
+	minMaxErr := domain.CheckMinMax(engValue, p.Min, p.Max)
+	if p.Type == domain.TypeBoolBit || minMaxErr != nil {
+		digest := previewDigest(deviceID, name, engValue)
+		if err := s.previews.validate(username, digest, previewToken); err != nil {
+			return err
+		}
+	}
+	if minMaxErr != nil {
+		return minMaxErr
 	}
 	raw, err := domain.InvertScale(engValue, p.Scale, p.Offset)
 	if err != nil {
@@ -227,11 +245,13 @@ func (s *GatewayService) WritePoint(deviceID, name string, engValue float64) err
 			s.recordErr(err)
 			return err
 		}
+		s.previews.burn(previewToken)
 		return nil
 	}
 	if err := s.modbus.WriteMultipleRegisters(d.Endpoint, d.UnitID, d.TimeoutMs, p.Address, regs); err != nil {
 		s.recordErr(err)
 		return err
 	}
+	s.previews.burn(previewToken)
 	return nil
 }

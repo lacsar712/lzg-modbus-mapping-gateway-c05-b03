@@ -41,8 +41,18 @@ docker compose up --build
 - `GET  /api/devices`
 - `GET  /api/devices/{id}/points`
 - `GET  /api/devices/{id}/points/{name}`
-- `PUT  /api/devices/{id}/points/{name}` body `{ "value": <number> }`
+- `POST /api/devices/{id}/points/{name}/preview` body `{ "value": <number> }`（observer 也可调用）
+- `PUT  /api/devices/{id}/points/{name}` body `{ "value": <number>, "previewToken": "<token>" }`
 - `GET  /api/devices/{id}/snapshot`
+
+## 写值预演（Write Preview）
+
+预演与正式写同构：`CheckMinMax` → `InvertScale` → `EncodeRegisters`（`bool_bit` 先读后写同一套规则），不落总线，返回 `raw`、将写入的 `registers`、`bool_bit` 掩码要点（`mask`/`existing`/`preserved`/`merged`）、一次性 `previewToken` 与 `expiresAt`（默认 60s 有效）。
+
+- **越界或 `bool_bit` 的正式 PUT 必须携带未过期且与正文摘要（device+point+value）一致的 `previewToken`**；过期、摘要不一致或已使用都会被拒绝；合法 PUT 后令牌作废。
+- 范围内的普通标量写保持免令牌（向后兼容），后端仍强制 `min`/`max` 校验。
+- `observer` 可预演不可提交；`engineer` 可预演 + 提交。
+- 前端写值对话框输入即预演，越界时禁用提交。
 
 ## YAML DSL
 
